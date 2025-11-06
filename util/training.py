@@ -35,15 +35,19 @@ def pre_train(args, data, data_test, model, load=True):
                 weight = model.state_dict()
                 with torch.no_grad():
                     model.eval()
-                    if args.dataset_name in ['flickr', 'reddit']:
-                        H = model.embedding(data_test)
-                        labels_test = data_test.y
-                        cls_num = int(labels_test.max()+1)
+                    # Skip clustering evaluation for multi-label datasets (e.g., PPI)
+                    if args.dataset_name == "ppi" or (data.y.dim() == 2 and data.y.size(1) > 1):
+                        nmi, ari = 0., 0.
                     else:
-                        H = model.embedding(data)[data.test_mask]
-                        labels_test = data.y[data.test_mask]
-                        cls_num = int(labels_test.max()+1)
-                    nmi, ari = clustering(H, cls_num, labels_test)
+                        if args.dataset_name in ['flickr', 'reddit']:
+                            H = model.embedding(data_test)
+                            labels_test = data_test.y
+                            cls_num = int(labels_test.max()+1)
+                        else:
+                            H = model.embedding(data)[data.test_mask]
+                            labels_test = data.y[data.test_mask]
+                            cls_num = int(labels_test.max()+1)
+                        nmi, ari = clustering(H, cls_num, labels_test)
             if epoch % 20 == 0:
                 print(f'Pretraining Epoch: {epoch:03d}, loss: {loss:.4f}, best loss: {best_loss:.4f}, nmi: {nmi:.4f}')
         model.load_state_dict(weight)  
@@ -81,17 +85,20 @@ def model_training_SSL(args, data, data_test, model, ccenter, clu_idx, lr, epoch
         optimizer.step()
 
         with torch.no_grad():
-            if args.dataset_name in ['flickr', 'reddit']:
-                if model.__class__.__name__ == "GCN":
-                    labels_test = data_test.y
-                    H_test = model.embedding(data_test)
-                    H_test_norm = F.normalize(H_test, p=2, dim=-1)
-                    nmi_c, _ = clustering_learn(H_test_norm, cc_norm, labels_test)
-                else:
-                    labels_test = data.y
-                    nmi_c, _ = clustering_learn(H_norm, cc_norm, labels_test)
+            if args.dataset_name == "ppi" or (data.y.dim() == 2 and data.y.size(1) > 1):
+                nmi_c = 0.0
             else:
-                nmi_c, _ = clustering_learn(H_norm[data.test_mask], cc_norm, labels_test)
+                if args.dataset_name in ['flickr', 'reddit']:
+                    if model.__class__.__name__ == "GCN":
+                        labels_test = data_test.y
+                        H_test = model.embedding(data_test)
+                        H_test_norm = F.normalize(H_test, p=2, dim=-1)
+                        nmi_c, _ = clustering_learn(H_test_norm, cc_norm, labels_test)
+                    else:
+                        labels_test = data.y
+                        nmi_c, _ = clustering_learn(H_norm, cc_norm, labels_test)
+                else:
+                    nmi_c, _ = clustering_learn(H_norm[data.test_mask], cc_norm, labels_test)
 
         if loss < best_loss:
             best_loss = loss
@@ -100,15 +107,18 @@ def model_training_SSL(args, data, data_test, model, ccenter, clu_idx, lr, epoch
             if eva == True:
                 with torch.no_grad():
                     model.eval()
-                    if args.dataset_name in ['flickr', 'reddit']:
-                        H = model.embedding(data_test)
-                        labels_test = data_test.y
-                        cls_num = int(labels_test.max()+1)
+                    if args.dataset_name == "ppi" or (data.y.dim() == 2 and data.y.size(1) > 1):
+                        nmi_c = 0.0
                     else:
-                        H = model.embedding(data)[data.test_mask]
-                        labels_test = data.y[data.test_mask]
-                        cls_num = int(labels_test.max()+1)
-                    nmi, _ = clustering(H, cls_num, labels_test)
+                        if args.dataset_name in ['flickr', 'reddit']:
+                            H = model.embedding(data_test)
+                            labels_test = data_test.y
+                            cls_num = int(labels_test.max()+1)
+                        else:
+                            H = model.embedding(data)[data.test_mask]
+                            labels_test = data.y[data.test_mask]
+                            cls_num = int(labels_test.max()+1)
+                        nmi, _ = clustering(H, cls_num, labels_test)
             
             if epoch % 1 == 0:
                 print(f'SSL Epoch: {epoch:03d}, loss: {loss:.4f}, best loss: {best_loss:.4f}, nmi kmeans: {nmi:.4f}, nmi contrast:{nmi_c:.4f}')

@@ -20,6 +20,9 @@ def eva_data(args, data, data_val, data_test, model):
             H_test_masked = H_test[data.test_mask]
             labels_test = data.y[data.test_mask]
 
+        if args.dataset_name == "ppi" or (data.y.dim() == 2 and data.y.size(1) > 1):
+            return H, H_val, H_test, H_test_masked, labels_test, None, None, None, None
+        
         H_train_shot_3, label_train_shot_3 = get_shot_train(args, H, data.y, shot=3)
         H_train_shot_5, label_train_shot_5 = get_shot_train(args, H, data.y, shot=5)
     return H, H_val, H_test, H_test_masked, labels_test, H_train_shot_3, label_train_shot_3, H_train_shot_5, label_train_shot_5

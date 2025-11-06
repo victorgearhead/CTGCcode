@@ -82,21 +82,29 @@ for i in range(args.nrepeat):
     H_train_shot_3, label_train_shot_3, \
     H_train_shot_5, label_train_shot_5 = eva_data(args, data, data_val, data_test, model_spa)
 
-    nmi, ari = evaluate_CL(H_test_masked, labels_test)
-    acc_shot3, acc_shot5 = evaluate_NC(args, H_train_shot_3, label_train_shot_3, H_train_shot_5, label_train_shot_5, H_test_masked, labels_test)
-    auc_lp, acc_lp = evaluate_LP(args, data, H, H_val, H_test, data_val, data_test)
+    if args.dataset_name != "ppi":
+        nmi, ari = evaluate_CL(H_test_masked, labels_test)
+        nmi_CL.append(nmi)
+        ari_CL.append(ari)
 
-    acc_shot3_NC.append(acc_shot3)
-    acc_shot5_NC.append(acc_shot5)
+    if args.dataset_name != "ppi":
+        acc_shot3, acc_shot5 = evaluate_NC(args, H_train_shot_3, label_train_shot_3, H_train_shot_5, label_train_shot_5, H_test_masked, labels_test)
+        acc_shot3_NC.append(acc_shot3)
+        acc_shot5_NC.append(acc_shot5)
+
+    auc_lp, acc_lp = evaluate_LP(args, data, H, H_val, H_test, data_val, data_test)
     auc_LP.append(auc_lp)
     acc_LP.append(acc_lp) 
-    nmi_CL.append(nmi)
-    ari_CL.append(ari) 
     print()
 
 pretrain_record_caption(args)
-result_record_whole_NC(args, acc_shot3_NC, shot=3)
-result_record_whole_NC(args, acc_shot5_NC, shot=5)
+
+if args.dataset_name != "ppi":
+    result_record_whole_NC(args, acc_shot3_NC, shot=3)
+    result_record_whole_NC(args, acc_shot5_NC, shot=5)
+    result_record_whole_CL(args, nmi_CL, ari_CL)
+else:
+    print("\n[INFO] Skipping NC and CL result saving for PPI (multi-label)\n")
+
 result_record_whole_LP(args, auc_LP, acc_LP)
-result_record_whole_CL(args, nmi_CL, ari_CL)
 print()

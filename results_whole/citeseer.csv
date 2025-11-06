@@ -1,0 +1,16 @@
+Node cla ACC,shot:3,test GNN:GCN,lr_cls:0.01,57.1+2.1
+Link pre AUC,shot:3,test GNN:GCN,lr_lp:0.01,85.6+1.3
+Link pre ACC,shot:3,test GNN:GCN,lr_lp:0.01,73.5+1.1
+Cluster  NMI,shot:3,test GNN:GCN,cluster:kmeans,25.5+11.0
+Cluster  ARI,shot:3,test GNN:GCN,cluster:kmeans,21.4+12.0
+****************************************************************
+    
+Node cla ACC,shot:5,test GNN:GCN,lr_cls:0.01,55.3+4.0
+Link pre AUC,shot:5,test GNN:GCN,lr_lp:0.01,85.2+0.9
+Link pre ACC,shot:5,test GNN:GCN,lr_lp:0.01,73.1+0.4
+Cluster  NMI,shot:5,test GNN:GCN,cluster:kmeans,26.3+9.4
+Cluster  ARI,shot:5,test GNN:GCN,cluster:kmeans,23.7+10.6
+****************************************************************
+    
+Link pre AUC,shot:3,test GNN:GCN,lr_lp:0.001,89.9+2.6
+Link pre ACC,shot:3,test GNN:GCN,lr_lp:0.001,76.1+6.9

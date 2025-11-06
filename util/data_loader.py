@@ -1,6 +1,8 @@
 from util.utils import *
 from util.module import *
 from util.models import *
+import cupy as cp
+from cupyx.scipy.sparse.linalg import eigsh
 
 def get_dataset(args):
 
@@ -96,8 +98,58 @@ def get_dataset(args):
         data = inductive_processing(dataset)
         data[0].train_num_original = int(data[0].train_mask.sum())
 
+    elif args.dataset_name == "ppi":
+        dataset_str = args.data_dir + args.dataset_name + "/raw/"
+
+        # Load adjacency
+        adj_full = sp.load_npz(dataset_str + 'adj_full.npz')
+        nnodes = adj_full.shape[0]
+
+        # Make undirected
+        adj_full = adj_full + adj_full.T
+        adj_full[adj_full > 1] = 1
+
+        # Load split indices
+        role = json.load(open(dataset_str + 'role.json','r'))
+        idx_train = role['tr']
+        idx_test  = role['te']
+        idx_val   = role['va']
+
+        train_mask = torch.zeros(nnodes, dtype=torch.bool)
+        val_mask   = torch.zeros(nnodes, dtype=torch.bool)
+        test_mask  = torch.zeros(nnodes, dtype=torch.bool)
+
+        train_mask[idx_train] = True
+        val_mask[idx_val]     = True
+        test_mask[idx_test]   = True
+
+        # Load labels (multi-label)
+        class_map = json.load(open(dataset_str + 'class_map.json','r'))
+        labels = process_labels(class_map, nnodes)
+
+        # Load + normalize features
+        feat = np.load(dataset_str + 'feats.npy')
+        feat_train = feat[idx_train]
+        scaler = StandardScaler()
+        scaler.fit(feat_train)
+        feat = scaler.transform(feat)
+
+        data = Data(
+            x=torch.FloatTensor(feat).float(),
+            edge_index=torch.LongTensor(np.array(adj_full.nonzero())),
+            y=torch.FloatTensor(labels),         # ✅ FLOAT for multi-label
+            train_mask=train_mask,
+            val_mask=val_mask,
+            test_mask=test_mask
+        )
+
+        transform = T.ToUndirected()
+        data = transform(data)
+        data.train_num_original = int(data.train_mask.sum())
+
     ## pre-processing
-    data = shot_labels(args, data)
+    if args.dataset_name != "ppi":
+        data = shot_labels(args, data)
     data = link_split_sample(args, data)
     return data
 
@@ -176,7 +228,7 @@ def process_labels(class_map, nnodes):
 
 def shot_labels(args, data):
     file_path = args.split_data_dir+f'{args.dataset_name}_label_shot.pkl'
-    if args.dataset_name in ['cora', 'citeseer', 'ogbn-arxiv', 'ogbn-products','amazon']:
+    if args.dataset_name in ['cora', 'citeseer', 'ogbn-arxiv', 'ogbn-products','amazon', 'ppi']:
         nnodes = data.x.shape[0]
 
         try:
@@ -246,7 +298,7 @@ def shot_labels(args, data):
 
 def link_split_sample(args, data):
     file_path = args.split_data_dir+f'{args.dataset_name}_links_sample.pt'
-    if args.dataset_name in ['cora', 'citeseer', 'ogbn-arxiv', 'ogbn-products','amazon']:
+    if args.dataset_name in ['cora', 'citeseer', 'ogbn-arxiv', 'ogbn-products','amazon', 'ppi']:
         try:
             links = torch.load(file_path)
             train_edge_index, train_edge_label, train_edge_label_index, \
@@ -461,18 +513,20 @@ def normalize_adj(mx):
 def get_eigens(args, laplacian_matrix, save=True):
     data_name = args.dataset_name
 
-    if data_name in [ 'ogbn-arxiv','ogbn-products', 'flickr', 'reddit', 'twitch-gamer']:
+    if data_name in [ 'ogbn-arxiv','ogbn-products', 'flickr', 'reddit', 'twitch-gamer', 'ppi']:
         print("SA eigsh calculation")
-        eigenvalues, eigenvectors = eigsh(A=laplacian_matrix, k=1000, which="SA", tol=1e-5)        
+        laplacian_matrix_gpu = cp.sparse.csr_matrix(laplacian_matrix)
+        eigenvalues, eigenvectors = eigsh(laplacian_matrix_gpu, k=1000, which="SA", tol=1e-5)        
     else:
         print("eigsh calculation")
         if sp.issparse(laplacian_matrix):
             laplacian_matrix = laplacian_matrix.todense()
         eigenvalues, eigenvectors = eigh(laplacian_matrix)
     
-    if data_name in [ 'ogbn-arxiv','ogbn-products', 'flickr', 'reddit', 'twitch-gamer']:
+    if data_name in [ 'ogbn-arxiv','ogbn-products', 'flickr', 'reddit', 'twitch-gamer', 'ppi']:
         print("LA eigsh calculation")
-        eigenvalues_la, eigenvectors_la = eigsh(A=laplacian_matrix, k=1000, which="LA", tol=1e-5)
+        laplacian_matrix_gpu = cp.sparse.csr_matrix(laplacian_matrix)
+        eigenvalues_la, eigenvectors_la = eigsh(laplacian_matrix_gpu, k=1000, which="LA", tol=1e-5)
         eigenvalues = np.hstack([eigenvalues, eigenvalues_la])
         eigenvectors = np.hstack([eigenvectors, eigenvectors_la])
         
