@@ -28,25 +28,11 @@ args.eigvals_path = args.eigen_path+ "eigenvalues.npy"
 args.eigvecs_path = args.eigen_path+ "eigenvectors.npy"
 args.lccmask_path = args.eigen_path+ "mask_lcc.npy"
 
-## data
 datasets = get_dataset(args)
 args, data, data_val, data_test = set_dataset(args, datasets)
 
-## get eigens
 L_lcc = aug_full_connected(data.x, data.edge_index, data.num_nodes)
 eigenvals_lcc, eigenvecs_lcc = get_eigens(args, L_lcc)
 
 np.save(args.eigvals_path, eigenvals_lcc)
 np.save(args.eigvecs_path, eigenvecs_lcc)
-
-
-
-
-
-
-
-
-
-
-
-

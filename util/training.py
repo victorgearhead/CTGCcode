@@ -5,15 +5,13 @@ from util.models import *
 
 
 def pre_train(args, data, data_test, model, load=True):
-    # pretrain by Node Discriminate
     save_path = args.model_path + args.dataset_name + "_pre.pt"
     if os.path.exists(save_path):
         param = torch.load(save_path)
         model_dict = model.state_dict()
-        filtered_param = {k: v for k,v in param.items() if 'classifier' not in k}
+        filtered_param = {k: v for k, v in param.items() if 'classifier' not in k}
         model_dict.update(filtered_param)
         model.load_state_dict(model_dict)
-
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr_pretrain, weight_decay=args.weight_decay)
         criterion = nn.BCEWithLogitsLoss()
@@ -21,7 +19,8 @@ def pre_train(args, data, data_test, model, load=True):
         disc_y = torch.cat((torch.ones(n), torch.zeros(n)), 0).to(args.device)
 
         best_loss = 1e6
-        nmi=0.
+        nmi = 0.
+        weight = model.state_dict()
         for epoch in range(1, args.epoch_pretrain):
             model.train()
             output = model.SSL_dis(data)
@@ -35,48 +34,93 @@ def pre_train(args, data, data_test, model, load=True):
                 weight = model.state_dict()
                 with torch.no_grad():
                     model.eval()
-                    # Skip clustering evaluation for multi-label datasets (e.g., PPI)
                     if args.dataset_name == "ppi" or (data.y.dim() == 2 and data.y.size(1) > 1):
                         nmi, ari = 0., 0.
                     else:
                         if args.dataset_name in ['flickr', 'reddit']:
                             H = model.embedding(data_test)
                             labels_test = data_test.y
-                            cls_num = int(labels_test.max()+1)
+                            cls_num = int(labels_test.max() + 1)
                         else:
                             H = model.embedding(data)[data.test_mask]
                             labels_test = data.y[data.test_mask]
-                            cls_num = int(labels_test.max()+1)
+                            cls_num = int(labels_test.max() + 1)
                         nmi, ari = clustering(H, cls_num, labels_test)
             if epoch % 20 == 0:
                 print(f'Pretraining Epoch: {epoch:03d}, loss: {loss:.4f}, best loss: {best_loss:.4f}, nmi: {nmi:.4f}')
-        model.load_state_dict(weight)  
+        model.load_state_dict(weight)
         torch.save(model.state_dict(), save_path)
+
     model.eval()
-    H = model.embedding(data)
-    cluster_idx = get_clu_idx(H, args.syn_num)
-    return model, cluster_idx
+    H_all = model.embedding(data) 
+    H_train = H_all[data.train_mask]
+    n_train = H_train.shape[0]
 
+    try:
+        num_classes = int(data.y.max().item() + 1)
+    except:
+        num_classes = 1
 
+    requested_K = int(max(1, int(round(data.train_num_original * getattr(args, 'reduction_rate', 0.1)))))
+    K_train = min(max(num_classes, requested_K), max(1, n_train))
+    if n_train <= 0:
+        raise RuntimeError("No training nodes found (data.train_mask is empty).")
 
+    cluster_idx_train, K_actual = get_clu_idx(H_train, K_train)
+    
+    ccentroids_train = compute_centroids_from_indices(H_train, cluster_idx_train, K_actual)
 
+    cluster_idx_full = assign_to_centroids(H_all, ccentroids_train)
 
+    membership = {}
+    train_idx = torch.nonzero(data.train_mask, as_tuple=False).view(-1).cpu().numpy()
+    cluster_idx_train_np = cluster_idx_train if isinstance(cluster_idx_train, np.ndarray) else cluster_idx_train.cpu().numpy()
+    for k in range(K_actual):
+        members = train_idx[cluster_idx_train_np == k].tolist()
+        membership[k] = members
+    save_json(membership, os.path.join(args.result_path, f"{args.dataset_name}_cluster_membership_seed{args.seed}.json"))
 
-def model_training_SSL(args, data, data_test, model, ccenter, clu_idx, lr, epochs, eva=False):
+    return model, cluster_idx_full
+def CC_contrast(cluster_center, temperature=0.3):
+    
+    similarity_matrix = torch.matmul(cluster_center, cluster_center.T)/ temperature
+    size = cluster_center.shape[0]
+    labels = torch.arange(size).to(cluster_center.device)
+    contrastive_loss = F.cross_entropy(similarity_matrix, labels) 
+    return contrastive_loss
 
-    ccenter.data = ccenter.data.to(args.device)
-    optimizer = torch.optim.Adam(list(model.parameters())+[ccenter], lr=lr, weight_decay=args.weight_decay)
-    labels_test = data.y[data.test_mask] if args.dataset_name not in ['flickr', 'reddit'] else data_test.y
+def model_training_SSL(args, data, model, ccenter, clu_idx, lr, epochs, eva=False):
+
+    if hasattr(ccenter, 'data'):
+        ccenter.data = ccenter.data.to(args.device)
+    else:
+        ccenter = ccenter.to(args.device)
+
+    optimizer = torch.optim.Adam(list(model.parameters()) + [ccenter], lr=lr, weight_decay=args.weight_decay)
+
+    train_mask = data.train_mask
+    y_train = data.y[train_mask] if args.dataset_name not in ['flickr', 'reddit'] else data.y[train_mask]
 
     best_loss = 1e10
-    nmi=0.
+    nmi = 0.
+
+    if torch.is_tensor(clu_idx):
+        clu_idx = clu_idx.cpu().numpy()
+    else:
+        clu_idx = np.array(clu_idx)
+
     for epoch in range(1, epochs):
         model.train()
-
-        H = model.embedding(data)
-        H_norm = F.normalize(H, p=2, dim=-1)
+        H_all = model.embedding(data)         
+        H_norm = F.normalize(H_all, p=2, dim=-1)
         cc_norm = F.normalize(ccenter, p=2, dim=-1)
-        loss1 = SSL_contrast(H_norm, cc_norm, clu_idx)
+
+        train_indices = np.nonzero(train_mask.cpu().numpy())[0]
+        H_train_norm = H_norm[train_mask]
+
+        clu_idx_train = clu_idx[train_indices]
+
+        loss1 = SSL_contrast_train(H_train_norm, cc_norm, clu_idx_train) 
         loss2 = CC_contrast(cc_norm)
         loss = loss1 + args.alpha * loss2
 
@@ -88,80 +132,50 @@ def model_training_SSL(args, data, data_test, model, ccenter, clu_idx, lr, epoch
             if args.dataset_name == "ppi" or (data.y.dim() == 2 and data.y.size(1) > 1):
                 nmi_c = 0.0
             else:
-                if args.dataset_name in ['flickr', 'reddit']:
-                    if model.__class__.__name__ == "GCN":
-                        labels_test = data_test.y
-                        H_test = model.embedding(data_test)
-                        H_test_norm = F.normalize(H_test, p=2, dim=-1)
-                        nmi_c, _ = clustering_learn(H_test_norm, cc_norm, labels_test)
-                    else:
-                        labels_test = data.y
-                        nmi_c, _ = clustering_learn(H_norm, cc_norm, labels_test)
-                else:
-                    nmi_c, _ = clustering_learn(H_norm[data.test_mask], cc_norm, labels_test)
+                H_train_for_clust = H_train_norm.detach().cpu()
+                cc_for_clust = cc_norm.detach().cpu()
+                nmi_c, _ = clustering_learn(H_train_for_clust, cc_for_clust, y_train.cpu().numpy())
 
         if loss < best_loss:
             best_loss = loss
             weight = model.state_dict()
-            
-            if eva == True:
-                with torch.no_grad():
-                    model.eval()
-                    if args.dataset_name == "ppi" or (data.y.dim() == 2 and data.y.size(1) > 1):
-                        nmi_c = 0.0
-                    else:
-                        if args.dataset_name in ['flickr', 'reddit']:
-                            H = model.embedding(data_test)
-                            labels_test = data_test.y
-                            cls_num = int(labels_test.max()+1)
-                        else:
-                            H = model.embedding(data)[data.test_mask]
-                            labels_test = data.y[data.test_mask]
-                            cls_num = int(labels_test.max()+1)
-                        nmi, _ = clustering(H, cls_num, labels_test)
-            
-            if epoch % 1 == 0:
-                print(f'SSL Epoch: {epoch:03d}, loss: {loss:.4f}, best loss: {best_loss:.4f}, nmi kmeans: {nmi:.4f}, nmi contrast:{nmi_c:.4f}')
-    print()
+            nmi = nmi_c
+
+        if epoch % 20 == 0:
+            print(f'SSL Epoch: {epoch:03d}, loss: {loss:.4f}, best loss: {best_loss:.4f}, nmi contrast(train):{nmi_c:.4f}')
+
     model.load_state_dict(weight)
     model.eval()
-    H = model.embedding(data)
-    cluster_idx = get_clu_idx_cc(H, ccenter)
 
-    return model, cluster_idx, ccenter
+    H_all = model.embedding(data).detach()
+    H_train = H_all[train_mask]    
+    train_indices = np.nonzero(train_mask.cpu().numpy())[0]
+    clu_idx_train = np.array(clu_idx)[train_indices]
+    if len(clu_idx_train) == 0:
+        K_actual = 1
+    else:
+        K_actual = int(np.max(clu_idx_train) + 1)
 
-def SSL_contrast(H, cluster_center, cluster_idx, temperature=0.3):
+    ccenters = compute_centroids_from_indices(H_train, clu_idx_train, K_actual).to(args.device)
 
-    row=np.arange(len(H))
-    col=cluster_idx
-    pos_mask = np.zeros([len(H),len(cluster_center)], dtype=bool)
-    pos_mask[row, col] = True 
+    cluster_idx_full = assign_to_centroids(H_all, ccenters)
 
-    rng= np.random.default_rng()
-    neg_num=3*len(cluster_idx)
-    neg_mask = np.zeros([len(H),len(cluster_center)], dtype=bool)
-    idx = rng.choice(neg_mask.size, neg_num, replace=False)
-    neg_mask.ravel()[idx] = True
-    neg_mask[row, col] = False 
+    return model, cluster_idx_full, ccenters
 
-    # SimCLR loss
-    similarity_matrix = torch.matmul(H, cluster_center.T)
-    positives = similarity_matrix[pos_mask]
-    negatives = similarity_matrix[neg_mask]
 
-    logits = torch.cat([positives, negatives])
-    labels = torch.cat([torch.ones(positives.shape[0]),torch.zeros(negatives.shape[0])]).to(H.device)
-    logits = logits / temperature
-    contrastive_loss = F.cross_entropy(logits, labels) 
-    return contrastive_loss
-
-def CC_contrast(cluster_center, temperature=0.3):
-    # SimCLR loss
-    similarity_matrix = torch.matmul(cluster_center, cluster_center.T)/ temperature
-    size = cluster_center.shape[0]
-    labels = torch.arange(size).to(cluster_center.device)
-    contrastive_loss = F.cross_entropy(similarity_matrix, labels) 
-    return contrastive_loss
+def SSL_contrast_train(H_train_norm, cluster_center, cluster_idx_train, temperature=0.3):
+    N = H_train_norm.shape[0]
+    K = cluster_center.shape[0]
+    pos_sim = (H_train_norm * cluster_center[cluster_idx_train]).sum(dim=1)
+    all_sim = torch.matmul(H_train_norm, cluster_center.t()) 
+    pos_mask = torch.zeros_like(all_sim, dtype=torch.bool)
+    rows = torch.arange(N, device=H_train_norm.device)
+    pos_mask[rows, torch.tensor(cluster_idx_train, device=H_train_norm.device)] = True
+    negatives = all_sim[~pos_mask].view(N, K-1)
+    logits = torch.cat([pos_sim.unsqueeze(1), negatives], dim=1) / temperature
+    labels = torch.zeros(N, dtype=torch.long, device=H_train_norm.device)
+    loss = F.cross_entropy(logits, labels)
+    return loss
 
 
 def adj_generation(args, data, model_spe, ccenter_spe):
@@ -277,9 +291,10 @@ def train_model_syn(args, data):
     return model
 
 
-def downstream_loss(h1, h2, t=1.0):
-    h1 = F.normalize(h1, dim=-1, p=2)
-    h2 = F.normalize(h2, dim=-1, p=2)
-    logits = torch.mm(h1, h2.t()) / t
-    labels = torch.arange(h1.size(0), device=h1.device, dtype=torch.long)
-    return 0.5 * F.cross_entropy(logits, labels) + 0.5 * F.cross_entropy(logits.t(), labels)
+def downstream_loss(logits, labels):
+    if labels.dtype in (torch.float32, torch.float64):
+        logits = F.normalize(logits, p=2, dim=-1)
+        labels = F.normalize(labels, p=2, dim=-1)
+        return 1 - F.cosine_similarity(logits, labels).mean()
+    else:
+        return F.cross_entropy(logits, labels)

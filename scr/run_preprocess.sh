@@ -1,6 +1,6 @@
-device=-1
+device=0
 
-python3 1preprocess.py --gpu $device --dataset cora 
-python3 1preprocess.py --gpu $device --dataset citeseer 
-python3 1preprocess.py --gpu $device --dataset ogbn-arxiv 
-python3 1preprocess.py --gpu $device --dataset reddit 
+python 1preprocess.py --gpu 0 --dataset cora 
+python 1preprocess.py --gpu 0 --dataset citeseer 
+python 1preprocess.py --gpu 0 --dataset ogbn-arxiv 
+python 1preprocess.py --gpu 0 --dataset reddit 

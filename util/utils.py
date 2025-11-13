@@ -11,28 +11,40 @@ def device_setting(args):
 
 
 def seed_everything(seed: int):
-    r"""Sets the seed for generating random numbers in :pytorch:`PyTorch`,
-    :obj:`numpy` and Python.
-
-    Args:
-        seed (int): The desired seed.
-    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-def get_clu_idx(H,cls_num):
-    device = H.device
-    H = F.normalize(H, p=2, dim=-1)    
-    H = H.cpu().detach().numpy()
-    kmeans = faiss.Kmeans(int(H.shape[1]), cls_num, gpu=False) 
-    kmeans.cp.min_points_per_centroid = 1
-    kmeans.train(H.astype('float32'))
-    _, I = kmeans.index.search(H.astype('float32'), 1)
-    cluster_idx = I.flatten()
-    return cluster_idx
 
+def get_clu_idx(H, cls_num):
+    import numpy as _np
+    if torch.is_tensor(H):
+        H_np = H.cpu().detach().numpy()
+    else:
+        H_np = _np.array(H)
+
+    N, D = H_np.shape
+    K = int(min(max(1, int(cls_num)), N))
+
+    if K == 1:
+        cluster_idx = _np.zeros(N, dtype=int)
+        return cluster_idx, K
+
+    H_norm = H_np.astype('float32')
+    kmeans = faiss.Kmeans(D, K, gpu=False)
+    kmeans.cp.min_points_per_centroid = 1
+    try:
+        kmeans.train(H_norm)
+    except Exception as e:
+        from sklearn.cluster import KMeans
+        km = KMeans(n_clusters=K, n_init=10, random_state=0).fit(H_norm)
+        I = km.labels_.astype(int)
+        return I, K
+
+    _, I = kmeans.index.search(H_norm, 1)
+    cluster_idx = I.flatten().astype(int)
+    return cluster_idx, K
 
 def clustering(H, cls_num, labels):
     device = H.device
@@ -47,6 +59,60 @@ def clustering(H, cls_num, labels):
     ari = ari_score(labels, y_pred)
     return nmi, ari
 
+def compute_centroids_from_indices(H, cluster_idx, K):
+
+    import numpy as _np
+    import torch
+    if torch.is_tensor(H):
+        H_np = H.cpu().detach().numpy()
+    else:
+        H_np = _np.array(H)
+
+    dim = H_np.shape[1]
+    centroids = _np.zeros((K, dim), dtype=_np.float32)
+    for k in range(K):
+        members = _np.where(cluster_idx == k)[0]
+        if len(members) == 0:
+            centroids[k] = H_np[_np.random.randint(0, H_np.shape[0])]
+        else:
+            centroids[k] = H_np[members].mean(axis=0)
+    return torch.tensor(centroids, dtype=torch.float32)
+
+
+
+def assign_to_centroids(H, C):
+    if isinstance(H, np.ndarray):
+        H = torch.from_numpy(H).float()
+    if isinstance(C, np.ndarray):
+        C = torch.from_numpy(C).float()
+
+    if H.dim() == 1:
+        H = H.unsqueeze(0)
+    if C.dim() == 1:
+        C = C.unsqueeze(0)
+    if H.size(1) != C.size(1):
+        if H.size(0) == C.size(1):
+            H = H.t()
+        if C.size(0) == H.size(1):
+            C = C.t()
+
+    device = H.device if H.is_cuda else (C.device if C.is_cuda else torch.device("cpu"))
+    H = H.to(device)
+    C = C.to(device)
+
+    H_norm = F.normalize(H, p=2, dim=-1)
+    C_norm = F.normalize(C, p=2, dim=-1)
+
+    sims = torch.matmul(H_norm, C_norm.T)
+    cluster_idx = torch.argmax(sims, dim=1).cpu().numpy()
+
+    return cluster_idx
+
+
+def save_json(obj, path):
+    import json
+    with open(path, 'w') as f:
+        json.dump(obj, f)
 
 
 def pretrain_record_caption(args):
@@ -150,12 +216,32 @@ def teacher_record_caption(args):
         "lr_ssl_spe:" f"{args.lr_ssl_spe}",
         "alpha:" f"{args.alpha}"])
 
+def init_cc(args, data, model_spa, model_spe, cluster_idx_full):
+    model_spa.eval()
+    H_all = model_spa.embedding(data)  # [N, d]
+    train_mask = data.train_mask
+    train_idx = torch.nonzero(train_mask, as_tuple=False).view(-1).cpu().numpy()
+    cluster_idx_train = np.array(cluster_idx_full)[train_idx]
+
+    ccenter_spa = compute_centroids_from_indices(H_all[train_mask], cluster_idx_train, args.syn_num).to(args.device)
+
+    num_classes = int(data.y.max().item() + 1) if data.y.dim() == 1 else data.y.size(1)
+    cluster_label_dists = torch.zeros((args.syn_num, num_classes), dtype=torch.float32)
+    for k in range(args.syn_num):
+        members = train_idx[cluster_idx_train == k]
+        if len(members) == 0:
+            cluster_label_dists[k] = torch.ones(num_classes) / num_classes
+        else:
+            labels = data.y[members].cpu().numpy()
+            counts = np.bincount(labels, minlength=num_classes)
+            probs = counts / counts.sum()
+            cluster_label_dists[k] = torch.tensor(probs, dtype=torch.float32)
+
+    torch.save(ccenter_spa.cpu(), os.path.join(args.result_path, f"{args.dataset_name}_ccenter_spa_seed{args.seed}.pt"))
+    torch.save(cluster_label_dists, os.path.join(args.result_path, f"{args.dataset_name}_cluster_label_dists_seed{args.seed}.pt"))
+    return ccenter_spa, ccenter_spa.clone()
 
 
-def init_cc(data, model_spa, model_spe,cluster_idx):
-    ccenter_spa,_ = get_cluster_center(model_spa, data, cluster_idx)
-    ccenter_spe,_ = get_cluster_center(model_spe, data, cluster_idx)
-    return ccenter_spa, ccenter_spe 
 
 def get_cluster_center(model, data, cluster_idx):
     H = model.embedding(data).detach()
@@ -240,13 +326,27 @@ def downstream_record_caption(args, data_syn):
 
 
 def clustering_learn(H, y, labels):
-    labels = labels.cpu()
+    import torch, numpy as np
+    from sklearn.metrics import normalized_mutual_info_score as nmi_score
+    from sklearn.metrics import adjusted_rand_score as ari_score
+
+    if isinstance(H, np.ndarray):
+        H = torch.from_numpy(H)
+    if isinstance(y, np.ndarray):
+        y = torch.from_numpy(y)
+    H = H.float()
+    y = y.float()
+
+    if isinstance(labels, torch.Tensor):
+        labels = labels.cpu().numpy()
+
     cosine_similarity = torch.mm(H, y.T)
-    y_pred = torch.argmax(cosine_similarity, dim=1)
-    y_pred = y_pred.cpu().detach().numpy()
+    y_pred = torch.argmax(cosine_similarity, dim=1).cpu().numpy()
+
     nmi = nmi_score(labels, y_pred, average_method='arithmetic')
     ari = ari_score(labels, y_pred)
     return nmi, ari
+
 
 def get_clu_idx_cc(H,ccenter):
     H_norm = F.normalize(H, p=2, dim=-1)
