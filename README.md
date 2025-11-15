@@ -1,4 +1,4 @@
-# 🚀 CTGC-L: Label Intelligent Contrastive Graph Condensation
+# 🚀 CTGC-L: Label Intelligent Heterophilic-Aware Contrastive Graph Condensation
 
 ### **Improvised Version of the Original CTGC Paper**
 
