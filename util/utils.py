@@ -268,6 +268,21 @@ def get_cluster_center(model, data, cluster_idx):
 
 
 
+def save_pre_train_2(args, model_spa, ccenter_spa, model_spe, ccenter_spe):
+    model_spa_ = model_spa.cpu()
+    ccenter_spa_ = ccenter_spa.clone().detach().cpu()
+    model_spe_ = model_spe.cpu()
+    ccenter_spe_ = ccenter_spe.clone().detach().cpu()
+    save_path = args.model_path+f'{args.dataset_name}_rate_{args.reduction_rate}_seed_{args.seed}.pth'
+
+    torch.save({
+        'model_spa': model_spa_.state_dict(),
+        'ccenter_spa': ccenter_spa_,
+        'model_spe': model_spe_.state_dict(),
+        'ccenter_spe': ccenter_spe_
+    }, save_path)
+    model_spa = model_spa.to(args.device)
+
 def save_pre_train(args, model_spa, ccenter_spa, model_spe, ccenter_spe):
     model_spa_ = model_spa.cpu()
     ccenter_spa_ = ccenter_spa.clone().detach().cpu()

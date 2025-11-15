@@ -53,7 +53,7 @@ os.makedirs(args.eigen_path, exist_ok=True)
 args = SSL_hyperpara(args)
 args = SSL_reduction(args)
 
-acc_shot3_NC, acc_shot5_NC, auc_LP, acc_LP, nmi_CL, ari_CL = [], [], [], [], [], []
+acc_shot3_NC, acc_shot5_NC, f1_shot3_NC, f1_shot5_NC,auc_LP, acc_LP, nmi_CL, ari_CL = [], [], [], [], [], [], [], []
 
 for i in range(args.nrepeat):
     args.seed += 1
@@ -70,17 +70,17 @@ for i in range(args.nrepeat):
     )
 
     model_spa = GCN(
-        in_channels=data.num_features,
-        out_channels=args.n_dim,
-        n_class=num_classes,
-        num_layers=2,
-        dropout=args.dropout
+        data.num_features,
+        args.n_dim,
+        num_classes,
+        2,
+        args.dropout
     ).to(args.device)
 
     print("\n[Stage 1] Teacher model pretraining...")
     model_spa, cluster_idx = pre_train(args, data, data_test, model_spa)
 
-    save_pre_train(args, model_spa, cluster_idx)
+    save_pre_train_2(args, model_spa, cluster_idx)
     print("[✔] Teacher model saved.\n")
 
     print("[Stage 2] Evaluating teacher model...\n")
@@ -95,10 +95,31 @@ for i in range(args.nrepeat):
         print(f"[Clustering] NMI: {nmi:.4f}, ARI: {ari:.4f}")
 
     if args.dataset_name != "ppi":
-        acc_nc, f1_nc = evaluate_NC(args, model_spa, H_test_masked, data, normalize=True)
-        acc_shot3_NC.append(acc_nc)
-        acc_shot5_NC.append(f1_nc)
-        print(f"[Node Classification] Accuracy: {acc_nc:.4f}, F1: {f1_nc:.4f}")
+        acc_5nc, f1_5nc = evaluate_NC(
+    args,
+    H_train_shot_5,       
+    label_train_shot_5,  
+    H_test_masked,      
+    labels_test,         
+    cluster_embs=None,   
+    normalize=True
+)
+        acc_3nc, f1_3nc = evaluate_NC(
+    args,
+    H_train_shot_3,
+    label_train_shot_3,
+    H_test_masked,
+    labels_test,
+    normalize=True
+)
+
+
+        acc_shot3_NC.append(acc_3nc)
+        acc_shot5_NC.append(acc_5nc)
+        f1_shot3_NC.append(f1_3nc)
+        f1_shot5_NC.append(f1_5nc)
+        print(f"[Node Classification] Accuracy 3-shot: {acc_3nc:.4f}, Accuracy 5-shot: {acc_5nc:.4f}")
+        print(f"[Node Classification] F1 3-shot: {f1_3nc:.4f}, F1 5-shot: {f1_5nc:.4f}")
 
     auc_lp, acc_lp = evaluate_LP(args, data, H, H_val, H_test, data_val, data_test)
     auc_LP.append(auc_lp)
