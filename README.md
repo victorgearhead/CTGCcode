@@ -37,7 +37,7 @@ Below are **new experimental results**, followed by the **original paper’s res
 
 ---
 
-## ✅ **New Results (Improved CTGC-L)**
+## ✅ **New Results (CTGC-L)**
 
 ### **Shot = 3**
 | Task | Metric | Value |
