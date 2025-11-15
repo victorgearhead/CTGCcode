@@ -124,19 +124,13 @@ import torch
 import torch.nn.functional as F
 
 def evaluate_NC(args, H_train, y_train, H_test, y_test, cluster_embs=None, normalize=True):
-    """
-    Evaluate Node Classification using cosine similarity between test embeddings
-    and either cluster embeddings or class prototypes computed from train embeddings.
-    """
 
-    # Normalize embeddings
     if normalize:
         H_train = F.normalize(H_train, p=2, dim=-1)
         H_test = F.normalize(H_test, p=2, dim=-1)
         if cluster_embs is not None:
             cluster_embs = F.normalize(cluster_embs, p=2, dim=-1)
 
-    # If cluster embeddings not provided, compute class prototypes
     if cluster_embs is None:
         num_classes = int(y_train.max().item() + 1)
         cluster_embs = torch.zeros((num_classes, H_train.size(1)), device=H_train.device)
@@ -145,18 +139,15 @@ def evaluate_NC(args, H_train, y_train, H_test, y_test, cluster_embs=None, norma
             if mask.sum() > 0:
                 cluster_embs[c] = H_train[mask].mean(dim=0)
 
-    # Move all to same device
     device = args.device if hasattr(args, "device") else H_test.device
     H_test = H_test.to(device)
     H_train = H_train.to(device)
     cluster_embs = cluster_embs.to(device)
 
-    # Cosine similarity between test embeddings and cluster embeddings
-    sim = torch.matmul(H_test, cluster_embs.T)  # [N_test, num_classes]
+    sim = torch.matmul(H_test, cluster_embs.T)
 
     preds = torch.argmax(sim, dim=1)
 
-    # Compute accuracy and F1
     acc = (preds == y_test).float().mean().item()
     f1 = f1_score(y_test.cpu(), preds.cpu(), average="macro")
 
@@ -168,7 +159,6 @@ def evaluate_LP(args, data, H, H_val, H_test, data_val, data_test, hetero_aware=
     print('train link prediction task (heterophily-aware)')
     
     def build_pairs(h, edge_idx):
-        # Pairwise feature interaction (Hadamard + diff)
         h_i, h_j = h[edge_idx[0]], h[edge_idx[1]]
         hadamard = h_i * h_j
         diff = torch.abs(h_i - h_j)
